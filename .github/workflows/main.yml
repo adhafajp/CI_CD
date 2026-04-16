@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install mlflow
+          pip install mlflow pandas scikit-learn numpy
 
       - name: Run MLflow project
         run: |
@@ -42,7 +42,7 @@ jobs:
 
       - name: Get latest MLflow run_id
         run: |
-          RUN_ID=$(ls mlruns/0 | tail -n 1)
+          RUN_ID=$(ls -t mlruns/0 | grep -E '^[0-9a-f]{32}$' | head -n 1)
           echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
 
       - name: Validate model
