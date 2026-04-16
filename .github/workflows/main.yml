@@ -42,7 +42,7 @@ jobs:
 
       - name: Get latest MLflow run_id
         run: |
-          RUN_ID=$(ls -t mlruns/0 | grep -E '^[0-9a-f]{32}$' | head -n 1)
+          RUN_ID=$(python -c "from mlflow.tracking import MlflowClient; print(MlflowClient().search_runs(['0'], order_by=['start_time DESC'])[0].info.run_id)")
           echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
 
       - name: Validate model
