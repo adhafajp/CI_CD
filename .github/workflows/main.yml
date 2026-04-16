@@ -1,0 +1,78 @@
+name: CI/CD MLflow
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CSV_URL: "MLproject/train_pca.csv"
+  TARGET_VAR: "Credit_Score"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-mlflow
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mlflow
+
+      - name: Run MLflow project
+        run: |
+          mlflow run MLproject --env-manager=local
+
+      - name: Get latest MLflow run_id
+        run: |
+          RUN_ID=$(ls mlruns/0 | tail -n 1)
+          echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
+
+      - name: Validate model
+        run: |
+          python - <<EOF
+          import mlflow.pyfunc
+          model = mlflow.pyfunc.load_model("runs:/${{ env.RUN_ID }}/model")
+          print("Model loaded successfully")
+          EOF
+
+      - name: Build Docker Model
+        run: |
+          mlflow models build-docker \
+            --model-uri "runs:/${{ env.RUN_ID }}/model" \
+            --name cc_learn
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Tag Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker tag cc_learn ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG
+          docker tag cc_learn ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest
+
+      - name: Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG
+          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest
