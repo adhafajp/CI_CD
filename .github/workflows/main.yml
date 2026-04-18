@@ -177,7 +177,12 @@ jobs:
           "
           
           echo "Verifying exported model structure:"
-          ls -la MLproject/model_dir/
+          ls -la model_dir/
+
+          echo "Checking essential files:"
+          test -f model_dir/MLmodel && echo "  - MLmodel exists"
+          test -f model_dir/model.pkl && echo "  - model.pkl exists"
+          test -f model_dir/requirements.txt && echo "  - requirements.txt exists"
 
       - name: Create Dockerfile
         run: |
