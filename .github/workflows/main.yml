@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CSV_URL: "MLproject/train_pca.csv"
-  TARGET_VAR: "Credit_Score"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,39 +30,46 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          # Install library sesuai yang ada di conda.yaml (tanpa dagshub jika tidak perlu)
           pip install mlflow pandas scikit-learn numpy cloudpickle psutil scipy
-
-      - name: Generate MLflow Run ID
-        run: |
-          RUN_ID=$(uuidgen)
-          echo "MLFLOW_RUN_ID=$RUN_ID" >> $GITHUB_ENV
-          echo "Generated Run ID: $RUN_ID"
 
       - name: Run MLflow project
         run: |
           cd MLproject
-          # Tracking URI default adalah ./mlruns (lokal)
-          # Jalankan dengan Run ID yang sudah kita buat
-          mlflow run . --env-manager=local --run-id ${{ env.MLFLOW_RUN_ID }} -P dataset="train_pca.csv"
+          mlflow run . --env-manager=local -P dataset="train_pca.csv"
+
+      - name: Get latest MLflow run_id
+        run: |
+          export MLFLOW_TRACKING_URI="${{ github.workspace }}/MLproject/mlruns"
+          
+          RUN_ID=$(python -c "
+          from mlflow.tracking import MlflowClient
+          import mlflow
+          
+          client = MlflowClient()
+          runs = client.search_runs(experiment_ids=['0'], order_by=['start_time DESC'], max_results=1)
+          if runs:
+              print(runs[0].info.run_id)
+          else:
+              exit('No runs found!')
+          ")
+          
+          echo "Retrieved RUN_ID: $RUN_ID"
+          echo "MLFLOW_RUN_ID=$RUN_ID" >> $GITHUB_ENV
 
       - name: Validate model inference
         run: |
-          # Pastikan kita membaca dari folder MLproject/mlruns
           export MLFLOW_TRACKING_URI="${{ github.workspace }}/MLproject/mlruns"
           python -c "
           import mlflow
-          import pandas as pd
           import sys
-
+          
           try:
               model = mlflow.pyfunc.load_model('runs:/${{ env.MLFLOW_RUN_ID }}/model')
               print('✅ Model loaded successfully.')
-              
-              # Uji prediksi dengan dummy data (opsional)
-              # input_schema = model.metadata.get_input_schema()
-              # print(f'Input schema: {input_schema}')
-              print('✅ Model validation passed.')
+              input_example = model.metadata.get_input_schema().input_types()[0].to_dict()
+              dummy_input = {k: 0.0 for k in input_example.keys()}
+              pred = model.predict(dummy_input)
+              print(f'✅ Prediction test passed: {pred}')
           except Exception as e:
               print(f'❌ Model validation failed: {e}')
               sys.exit(1)
@@ -74,7 +77,6 @@ jobs:
 
       - name: Build Docker Model
         run: |
-          # Wajib set MLFLOW_TRACKING_URI agar mlflow tahu di mana mencari model
           export MLFLOW_TRACKING_URI="${{ github.workspace }}/MLproject/mlruns"
           echo "Building Docker image from run: ${{ env.MLFLOW_RUN_ID }}"
           mlflow models build-docker \
@@ -89,7 +91,6 @@ jobs:
 
       - name: Tag and Push Docker Image
         run: |
-          # Gunakan commit SHA sebagai tag unik
           IMAGE_TAG=${{ github.sha }}
           
           echo "Tagging image as ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG"
@@ -102,7 +103,7 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### 🚀 Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Run ID**: ${{ env.MLFLOW_RUN_ID }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Docker Image**: ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Docker Tag**: latest" >> $GITHUB_STEP_SUMMARY
