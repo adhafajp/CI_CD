@@ -117,20 +117,53 @@ jobs:
           RUN_ID="${{ steps.get_run_id.outputs.run_id }}"
           echo "Exporting model artifacts from run: $RUN_ID"
           
-          mkdir -p model_dir
+          python -c "
+          import mlflow
+          import shutil
+          import os
           
-          # Copy model artifacts dari mlruns ke model_dir
-          # Path pattern: mlruns/0/<run_id>/artifacts/model/
-          ARTIFACT_PATH="mlruns/0/$RUN_ID/artifacts/model"
+          RUN_ID = '$RUN_ID'
           
-          if [ -d "$ARTIFACT_PATH" ]; then
-              cp -r "$ARTIFACT_PATH"/* model_dir/
-              echo "Model artifacts copied to model_dir/"
-              ls -la model_dir/
-          else
-              echo "ERROR: Artifact path not found: $ARTIFACT_PATH"
-              exit 1
+          # Set tracking URI
+          mlflow.set_tracking_uri('sqlite:///mlflow.db')
+          
+          # Buat folder model_dir
+          os.makedirs('model_dir', exist_ok=True)
+          
+          # Download artifacts dari run
+          client = mlflow.tracking.MlflowClient()
+          
+          # Cari tahu path artifact yang benar
+          run = client.get_run(RUN_ID)
+          artifact_uri = run.info.artifact_uri
+          print(f'Artifact URI: {artifact_uri}')
+          
+          # Download semua artifacts ke model_dir
+          client.download_artifacts(RUN_ID, 'model', 'model_dir')
+          
+          print('Model artifacts downloaded successfully')
+          
+          print('Contents of model_dir:')
+          for item in os.listdir('model_dir'):
+              print(f'  - {item}')
+              
+          if os.path.exists('model_dir/model'):
+              print('Contents of model_dir/model:')
+              for item in os.listdir('model_dir/model'):
+                  print(f'    - {item}')
+          "
+          
+          echo "Verifying exported model structure:"
+          ls -la MLproject/model_dir/
+          
+          if [ -d "MLproject/model_dir/model" ]; then
+              echo "Moving contents from model_dir/model/ to model_dir/"
+              mv MLproject/model_dir/model/* MLproject/model_dir/
+              rmdir MLproject/model_dir/model
           fi
+          
+          echo "Final model_dir contents:"
+          ls -la MLproject/model_dir/
 
       - name: Create Dockerfile
         run: |
