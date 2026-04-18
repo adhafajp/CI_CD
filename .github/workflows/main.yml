@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Tracking URI untuk seluruh job - menggunakan SQLite backend (default MLflow >= 2.19.0)
+  MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/MLproject/mlflow.db
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,82 +36,143 @@ jobs:
           pip install --upgrade pip
           pip install mlflow pandas scikit-learn numpy cloudpickle psutil scipy
 
+      # =========================================================================
+      # 1. Jalankan MLflow project
+      # =========================================================================
       - name: Run MLflow project
         run: |
           cd MLproject
-          export MLFLOW_TRACKING_URI="sqlite:///mlflow.db"
-          echo "MLFLOW_TRACKING_URI is set to $MLFLOW_TRACKING_URI"
+          echo "📊 Running MLflow project with tracking URI: $MLFLOW_TRACKING_URI"
           mlflow run . --env-manager=local -P dataset="train_pca.csv"
 
-     - name: Get latest MLflow run_id
+      # =========================================================================
+      # 2. Ambil Run ID terbaru
+      # =========================================================================
+      - name: Get latest MLflow run_id
+        id: get_run_id
         run: |
           cd MLproject
-          export MLFLOW_TRACKING_URI="sqlite:///mlflow.db"
-          
           RUN_ID=$(python -c "
           from mlflow.tracking import MlflowClient
           
           client = MlflowClient()
-          runs = client.search_runs(experiment_ids=['0'], order_by=['start_time DESC'], max_results=1)
-          if runs:
-              print(runs[0].info.run_id)
-          else:
-              exit('No runs found!')
+          runs = client.search_runs(
+              experiment_ids=['0'], 
+              order_by=['start_time DESC'], 
+              max_results=1
+          )
+          
+          if not runs:
+              raise RuntimeError('❌ No MLflow runs found in tracking store')
+          
+          print(runs[0].info.run_id)
           ")
           
-          echo "Retrieved RUN_ID: $RUN_ID"
-          echo "MLFLOW_RUN_ID=$RUN_ID" >> $GITHUB_ENV
+          echo "✅ Retrieved RUN_ID: $RUN_ID"
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
 
+      # =========================================================================
+      # 3. Validasi model
+      # =========================================================================
       - name: Validate model inference
         run: |
           cd MLproject
-          export MLFLOW_TRACKING_URI="sqlite:///mlflow.db"
           python -c "
           import mlflow
           import sys
+          import pandas as pd
+          
+          RUN_ID = '${{ steps.get_run_id.outputs.run_id }}'
+          print(f'🔍 Validating model from run: {RUN_ID}')
           
           try:
-              model = mlflow.pyfunc.load_model('runs:/${{ env.MLFLOW_RUN_ID }}/model')
-              print('✅ Model loaded successfully.')
+              model = mlflow.pyfunc.load_model(f'runs:/{RUN_ID}/model')
+              print('✅ Model loaded successfully')
+              
+              # Dapatkan input schema dan buat dummy data
               input_schema = model.metadata.get_input_schema()
-              dummy_input = {col.name: 0.0 for col in input_schema.inputs}
-              pred = model.predict(dummy_input)
-              print(f'✅ Prediction test passed: {pred}')
+              dummy_input = {}
+              for col in input_schema.inputs:
+                  if col.type == 'double' or col.type == 'float':
+                      dummy_input[col.name] = 0.0
+                  elif col.type == 'long' or col.type == 'integer':
+                      dummy_input[col.name] = 0
+                  else:
+                      dummy_input[col.name] = 'dummy'
+              
+              # Prediksi dengan dummy data
+              pred = model.predict(pd.DataFrame([dummy_input]))
+              print(f'✅ Prediction test passed. Output shape: {pred.shape if hasattr(pred, \"shape\") else len(pred)}')
+              
           except Exception as e:
               print(f'❌ Model validation failed: {e}')
+              import traceback
+              traceback.print_exc()
               sys.exit(1)
           "
 
+      # =========================================================================
+      # 4. Build Docker image
+      # =========================================================================
       - name: Build Docker Model
         run: |
           cd MLproject
-          export MLFLOW_TRACKING_URI="sqlite:///mlflow.db"
-          echo "Building Docker image from run: ${{ env.MLFLOW_RUN_ID }}"
+          RUN_ID="${{ steps.get_run_id.outputs.run_id }}"
+          echo "🐳 Building Docker image from run: $RUN_ID"
+          
           mlflow models build-docker \
-            --model-uri "runs:/${{ env.MLFLOW_RUN_ID }}/model" \
-            --name "cc_learn"
+            --model-uri "runs:/$RUN_ID/model" \
+            --name "cc_learn" \
+            --env-manager local
 
+      # =========================================================================
+      # 5. Login ke Docker Hub
+      # =========================================================================
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+      # =========================================================================
+      # 6. Tag dan Push ke Docker Hub
+      # =========================================================================
       - name: Tag and Push Docker Image
         run: |
-          IMAGE_TAG=${{ github.sha }}
+          IMAGE_TAG="${{ github.sha }}"
+          DOCKER_USER="${{ secrets.DOCKER_HUB_USERNAME }}"
           
-          echo "Tagging image as ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG"
-          docker tag cc_learn ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG
-          docker tag cc_learn ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest
+          echo "🏷️  Tagging images..."
+          docker tag cc_learn "$DOCKER_USER/cc_learn:$IMAGE_TAG"
+          docker tag cc_learn "$DOCKER_USER/cc_learn:latest"
           
-          echo "Pushing images..."
-          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:$IMAGE_TAG
-          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest
+          echo "📤 Pushing to Docker Hub..."
+          docker push "$DOCKER_USER/cc_learn:$IMAGE_TAG"
+          docker push "$DOCKER_USER/cc_learn:latest"
+          
+          echo "✅ Successfully pushed:"
+          echo "   - $DOCKER_USER/cc_learn:$IMAGE_TAG"
+          echo "   - $DOCKER_USER/cc_learn:latest"
 
+      # =========================================================================
+      # 7. Summary
+      # =========================================================================
       - name: Summary
+        if: always()
         run: |
-          echo "### Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Run ID**: ${{ env.MLFLOW_RUN_ID }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Docker Image**: ${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Docker Tag**: latest" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## 🚀 MLflow CI/CD Pipeline Summary"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| **MLflow Run ID** | \`${{ steps.get_run_id.outputs.run_id }}\` |"
+            echo "| **Git Commit SHA** | \`${{ github.sha }}\` |"
+            echo "| **Docker Image** | \`${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:${{ github.sha }}\` |"
+            echo "| **Docker Tag (latest)** | \`${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest\` |"
+            echo "| **MLflow Version** | \`$(mlflow --version)\` |"
+            echo "| **Python Version** | \`3.12\` |"
+            echo ""
+            echo "### 📊 Artifacts"
+            echo "- Model artifacts stored in: \`MLproject/mlruns/\`"
+            echo "- Metadata stored in: \`MLproject/mlflow.db\`"
+          } >> $GITHUB_STEP_SUMMARY
