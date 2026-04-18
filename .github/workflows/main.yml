@@ -94,13 +94,11 @@ jobs:
                   else:
                       dummy_data[col_name] = 'unknown'
               
-              # Buat DataFrame dari dummy data
               dummy_df = pd.DataFrame([dummy_data])
               print(f'Dummy input created with shape: {dummy_df.shape}')
               
               pred = model.predict(dummy_df)
               
-              # Cek hasil prediksi
               if hasattr(pred, 'shape'):
                   print(f'Prediction test passed. Output shape: {pred.shape}')
               else:
@@ -113,16 +111,62 @@ jobs:
               sys.exit(1)
           "
 
-      - name: Build Docker Model
+      - name: Export model artifacts
         run: |
           cd MLproject
           RUN_ID="${{ steps.get_run_id.outputs.run_id }}"
-          echo "Building Docker image from run: $RUN_ID"
+          echo "Exporting model artifacts from run: $RUN_ID"
           
-          mlflow models build-docker \
-            --model-uri "runs:/$RUN_ID/model" \
-            --name "cc_learn" \
-            --env-manager local
+          mkdir -p model_dir
+          
+          # Copy model artifacts dari mlruns ke model_dir
+          # Path pattern: mlruns/0/<run_id>/artifacts/model/
+          ARTIFACT_PATH="mlruns/0/$RUN_ID/artifacts/model"
+          
+          if [ -d "$ARTIFACT_PATH" ]; then
+              cp -r "$ARTIFACT_PATH"/* model_dir/
+              echo "Model artifacts copied to model_dir/"
+              ls -la model_dir/
+          else
+              echo "ERROR: Artifact path not found: $ARTIFACT_PATH"
+              exit 1
+          fi
+
+      - name: Create Dockerfile
+        run: |
+          cd MLproject
+          cat > Dockerfile << 'EOF'
+          FROM python:3.12.7-slim
+          
+          WORKDIR /app
+          
+          RUN pip install --no-cache-dir \
+              setuptools==82.0.1 \
+              mlflow==3.10.1 \
+              fastapi==0.112.2 \
+              uvicorn==0.44.0 \
+              scikit-learn==1.5.2 \
+              pandas==2.3.3 \
+              numpy==2.4.4 \
+              psutil==6.0.0 \
+              waitress==3.0.2
+          
+          COPY model_dir /app/model
+          
+          EXPOSE 5000
+          
+          CMD ["mlflow", "models", "serve", "-m", "/app/model", "--host", "0.0.0.0", "--port", "5000", "--no-conda"]
+          EOF
+          
+          echo "Dockerfile created:"
+          cat Dockerfile
+
+      - name: Build Docker Model
+        run: |
+          cd MLproject
+          echo "Building Docker image with custom Dockerfile..."
+          
+          docker build -t cc_learn .
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -161,8 +205,11 @@ jobs:
             echo "| Docker Tag (latest) | \`${{ secrets.DOCKER_HUB_USERNAME }}/cc_learn:latest\` |"
             echo "| MLflow Version | \`$(mlflow --version)\` |"
             echo "| Python Version | \`3.12\` |"
+            echo "| Docker Base Image | \`python:3.12.7-slim\` |"
+            echo "| Model Port | \`5000\` |"
             echo ""
             echo "### Artifacts"
             echo "- Model artifacts stored in: \`MLproject/mlruns/\`"
             echo "- Metadata stored in: \`MLproject/mlflow.db\`"
+            echo "- Dockerfile: Custom (python:3.12.7-slim)"
           } >> $GITHUB_STEP_SUMMARY

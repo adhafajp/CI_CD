@@ -1,0 +1,9 @@
+2026-04-18 20:59:29,476 - ERROR - Exception: HTTPConnectionPool(host='127.0.0.1', port=5005): Max retries exceeded with url: /invocations (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=5005): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it"))
+2026-04-18 21:30:47,243 - ERROR - Error 502: <html>
+<head><title>502 Bad Gateway</title></head>
+<body>
+<center><h1>502 Bad Gateway</h1></center>
+<hr><center>nginx/1.26.3</center>
+</body>
+</html>
+
